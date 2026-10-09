@@ -27,11 +27,20 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Scaffold Fresh Flutter Project & Gradle Setup
+        run: |
+          # Generates a fully compliant modern Gradle project structure in the current repo
+          flutter create . --org com.overridden.music --project-name overridden_music --force
+
+      - name: Move custom_main to lib/main.dart
+        run: |
+          cp custom_main.dart lib/main.dart
+
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Build APK (Release with custom target)
-        run: flutter build apk --release --target=custom_main.dart
+      - name: Build APK (Release)
+        run: flutter build apk --release
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
