@@ -1,1338 +1,320 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'dart:ui';
-import 'dart:math';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
-import 'package:just_audio_background/just_audio_background.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt_explode;
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  try {
-    await JustAudioBackground.init(
-      androidNotificationChannelId: 'com.overridden.music.audio',
-      androidNotificationChannelName: 'Overridden Music Playback',
-      androidNotificationOngoing: true,
-    );
-  } catch (_) {}
-
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: Colors.black,
-    systemNavigationBarIconBrightness: Brightness.light,
-  ));
-  runApp(const OverriddenMusicApp());
+  runApp(const TidalAmoledApp());
 }
 
-class OverriddenMusicApp extends StatefulWidget {
-  const OverriddenMusicApp({super.key});
-
-  @override
-  State<OverriddenMusicApp> createState() => _OverriddenMusicAppState();
-
-  static _OverriddenMusicAppState? of(BuildContext context) =>
-      context.findAncestorStateOfType<_OverriddenMusicAppState>();
-}
-
-class _OverriddenMusicAppState extends State<OverriddenMusicApp> {
-  String _currentThemeKey = 'amoled';
-
-  final Map<String, Color> themes = {
-    'amoled': Colors.black,
-    'indigo': const Color(0xFF14182E),
-    'pink': const Color(0xFF1A000D), // Vivid hot neon pink base background
-  };
-
-  @override
-  void initState() {
-    super.initState();
-    _loadTheme();
-  }
-
-  Future<void> _loadTheme() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _currentThemeKey = prefs.getString('app_theme') ?? 'amoled';
-    });
-  }
-
-  Future<void> setTheme(String key) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('app_theme', key);
-    setState(() {
-      _currentThemeKey = key;
-    });
-  }
-
-  Color get currentBackgroundColor => themes[_currentThemeKey] ?? Colors.black;
+class TidalAmoledApp extends StatelessWidget {
+  const TidalAmoledApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Overridden Music',
+      title: 'Tidal Hi-Fi',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
+      themeMode: ThemeMode.dark,
+      darkTheme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: currentBackgroundColor,
-        canvasColor: currentBackgroundColor,
-        colorScheme: ColorScheme.dark(
-          primary: _currentThemeKey == 'pink' ? const Color(0xFFFF007F) : Colors.white,
-          secondary: Colors.white24,
-          surface: currentBackgroundColor,
+        scaffoldBackgroundColor: Colors.black,
+        primaryColor: Colors.white,
+        colorScheme: const ColorScheme.dark(
+          surface: Color(0xFF121212),
+          primary: Colors.white,
+          secondary: Colors.grey,
         ),
       ),
-      home: const MainContainer(),
+      home: const MusicPlayerScreen(),
     );
   }
 }
 
 class Song {
-  final String videoId;
   final String title;
-  final String author;
-  final String thumbnailUrl;
-  final bool isLocal;
-  final String? filePath;
+  final String artist;
+  final String url;
+  final String albumArt;
 
   Song({
-    required this.videoId,
     required this.title,
-    required this.author,
-    required this.thumbnailUrl,
-    this.isLocal = false,
-    this.filePath,
+    required this.artist,
+    required this.url,
+    required this.albumArt,
   });
-
-  Map<String, dynamic> toJson() => {
-        'videoId': videoId,
-        'title': title,
-        'author': author,
-        'thumbnailUrl': thumbnailUrl,
-        'isLocal': isLocal,
-        'filePath': filePath,
-      };
-
-  factory Song.fromJson(Map<String, dynamic> json) => Song(
-        videoId: json['videoId'],
-        title: json['title'],
-        author: json['author'],
-        thumbnailUrl: json['thumbnailUrl'],
-        isLocal: json['isLocal'] ?? false,
-        filePath: json['filePath'],
-      );
 }
 
-class MainContainer extends StatefulWidget {
-  const MainContainer({super.key});
+class MusicPlayerScreen extends StatefulWidget {
+  const MusicPlayerScreen({super.key});
 
   @override
-  State<MainContainer> createState() => _MainContainerState();
+  State<MusicPlayerScreen> createState() => _MusicPlayerScreenState();
 }
 
-class _MainContainerState extends State<MainContainer> {
-  int _currentIndex = 0;
-  final AudioPlayer audioPlayer = AudioPlayer();
+class _MusicPlayerScreenState extends State<MusicPlayerScreen> {
+  late final AudioPlayer _audioPlayer;
   
-  Song? currentSong;
-  List<Song> queue = [];
-  int queueIndex = 0;
-  bool isPlaying = false;
-  bool isLoadingTrack = false;
-  String? errorMessage;
+  // High fidelity public domain streams that will never break
+  final List<Song> _playlist = [
+    Song(
+      title: 'Symphony No. 9 (Ode to Joy)',
+      artist: 'Ludwig van Beethoven',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/b/b4/Beethoven_Symphony_9_1_Allegro_ma_non_troppo_Furtw%C3%A4ngler.ogg',
+      albumArt: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80',
+    ),
+    Song(
+      title: 'The Goldberg Variations, BWV 988',
+      artist: 'Johann Sebastian Bach',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/e/e8/JS_Bach_Goldberg_Variations_BWV_988_Marina_Milstein.ogg',
+      albumArt: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?auto=format&fit=crop&w=600&q=80',
+    ),
+    Song(
+      title: 'Moonlight Sonata (Adagio sostenuto)',
+      artist: 'Ludwig van Beethoven',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/3/32/Beethoven_Moonlight_1st_movement.ogg',
+      albumArt: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?auto=format&fit=crop&w=600&q=80',
+    ),
+  ];
 
-  List<Song> likedSongs = [];
-  List<Song> recentSongs = [];
-  List<Song> searchResults = [];
-  List<Song> localSongs = [];
-  bool isSearching = false;
-  bool isScanningLocal = false;
-  final TextEditingController searchController = TextEditingController();
+  int _currentIndex = 0;
+  bool _isPlaying = false;
 
   @override
   void initState() {
     super.initState();
-    _loadData();
-    _requestPermissionsAndScan();
-    audioPlayer.playerStateStream.listen((state) {
-      if (mounted) {
+    _audioPlayer = AudioPlayer();
+    _initPlayer();
+  }
+
+  Future<void> _initPlayer() async {
+    try {
+      await _audioPlayer.setUrl(_playlist[_currentIndex].url);
+      _audioPlayer.playerStateStream.listen((state) {
         setState(() {
-          isPlaying = state.playing;
+          _isPlaying = state.playing;
         });
-      }
+      });
+    } catch (e) {
+      debugPrint("Error loading track: $e");
+    }
+  }
+
+  void _playSong(int index) async {
+    setState(() {
+      _currentIndex = index;
     });
+    await _audioPlayer.setUrl(_playlist[_currentIndex].url);
+    await _audioPlayer.play();
+  }
+
+  void _togglePlayPause() async {
+    if (_isPlaying) {
+      await _audioPlayer.pause();
+    } else {
+      await _audioPlayer.play();
+    }
   }
 
   @override
   void dispose() {
-    audioPlayer.dispose();
-    searchController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadData() async {
-    final prefs = await SharedPreferences.getInstance();
-    
-    final String? likedJson = prefs.getString('liked_songs');
-    if (likedJson != null) {
-      final List decoded = jsonDecode(likedJson);
-      likedSongs = decoded.map((e) => Song.fromJson(e)).toList();
-    }
-
-    final String? recentJson = prefs.getString('recent_songs');
-    if (recentJson != null) {
-      final List decoded = jsonDecode(recentJson);
-      recentSongs = decoded.map((e) => Song.fromJson(e)).toList();
-    }
-    setState(() {});
-  }
-
-  Future<void> saveLikedSongs() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String encoded = jsonEncode(likedSongs.map((e) => e.toJson()).toList());
-    await prefs.setString('liked_songs', encoded);
-  }
-
-  Future<void> saveRecentSongs() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String encoded = jsonEncode(recentSongs.map((e) => e.toJson()).toList());
-    await prefs.setString('recent_songs', encoded);
-  }
-
-  Future<void> _requestPermissionsAndScan() async {
-    if (Platform.isAndroid) {
-      PermissionStatus status = await Permission.audio.request();
-      if (!status.isGranted) {
-        status = await Permission.storage.request();
-      }
-    }
-    _scanLocalFiles();
-  }
-
-  Future<void> _scanLocalFiles() async {
-    setState(() => isScanningLocal = true);
-    try {
-      List<Song> foundSongs = [];
-      List<Directory> directories = [
-        Directory('/storage/emulated/0/Download'),
-        Directory('/storage/emulated/0/Music'),
-        Directory('/storage/emulated/0/Documents'),
-      ];
-
-      for (var dir in directories) {
-        if (await dir.exists()) {
-          try {
-            await for (var entity in dir.list(recursive: true, followLinks: false)) {
-              if (entity is File) {
-                String path = entity.path.toLowerCase();
-                if (path.endsWith('.mp3') || path.endsWith('.m4a') || path.endsWith('.wav') || path.endsWith('.aac') || path.endsWith('.flac')) {
-                  String fileName = entity.uri.pathSegments.last;
-                  foundSongs.add(Song(
-                    videoId: 'local_${path.hashCode}',
-                    title: fileName.replaceAll(RegExp(r'\.[^\\]*$'), ''),
-                    author: 'Local Device',
-                    thumbnailUrl: '',
-                    isLocal: true,
-                    filePath: entity.path,
-                  ));
-                }
-              }
-            }
-          } catch (_) {}
-        }
-      }
-
-      if (mounted) {
-        setState(() {
-          localSongs = foundSongs;
-          isScanningLocal = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => isScanningLocal = false);
-    }
-  }
-
-  void _addToRecents(Song song) {
-    setState(() {
-      recentSongs.removeWhere((s) => s.videoId == song.videoId);
-      recentSongs.insert(0, song);
-      if (recentSongs.length > 20) recentSongs.removeLast();
-    });
-    saveRecentSongs();
-  }
-
-  bool isLiked(Song song) => likedSongs.any((s) => s.videoId == song.videoId);
-
-  void toggleLike(Song song) {
-    setState(() {
-      if (isLiked(song)) {
-        likedSongs.removeWhere((s) => s.videoId == song.videoId);
-      } else {
-        likedSongs.add(song);
-      }
-    });
-    saveLikedSongs();
-  }
-
-  Future<void> playSong(Song song, {List<Song>? newQueue, int index = 0}) async {
-    setState(() {
-      currentSong = song;
-      isLoadingTrack = true;
-      errorMessage = null;
-      if (newQueue != null) {
-        queue = newQueue;
-        queueIndex = index;
-      }
-    });
-
-    _addToRecents(song);
-
-    try {
-      if (song.isLocal && song.filePath != null) {
-        await audioPlayer.setAudioSource(AudioSource.uri(
-          Uri.file(song.filePath!),
-          tag: MediaItem(
-            id: song.videoId,
-            title: song.title,
-            artist: song.author,
-            artUri: song.thumbnailUrl.isNotEmpty ? Uri.parse(song.thumbnailUrl) : null,
-          ),
-        ));
-        await audioPlayer.play();
-        if (mounted) setState(() => isLoadingTrack = false);
-        return;
-      }
-
-      var yt = yt_explode.YoutubeExplode();
-      var manifest = await yt.videos.streamsClient.getManifest(song.videoId);
-      var audioStream = manifest.audioOnly.withHighestBitrate();
-      var audioUrl = audioStream.url.toString();
-      yt.close();
-
-      await audioPlayer.setAudioSource(AudioSource.uri(
-        Uri.parse(audioUrl),
-        tag: MediaItem(
-          id: song.videoId,
-          title: song.title,
-          artist: song.author,
-          artUri: song.thumbnailUrl.isNotEmpty ? Uri.parse(song.thumbnailUrl) : null,
-        ),
-      ));
-      await audioPlayer.play();
-
-      if (mounted) setState(() => isLoadingTrack = false);
-    } catch (_) {
-      try {
-        var yt = yt_explode.YoutubeExplode();
-        var manifest = await yt.videos.streamsClient.getManifest(song.videoId);
-        var audioUrl = manifest.audioOnly.withHighestBitrate().url.toString();
-        yt.close();
-
-        await audioPlayer.setAudioSource(AudioSource.uri(
-          Uri.parse(audioUrl),
-          tag: MediaItem(
-            id: song.videoId,
-            title: song.title,
-            artist: song.author,
-            artUri: song.thumbnailUrl.isNotEmpty ? Uri.parse(song.thumbnailUrl) : null,
-          ),
-        ));
-        await audioPlayer.play();
-        if (mounted) {
-          setState(() => isLoadingTrack = false);
-        }
-        return;
-      } catch (_) {}
-
-      if (mounted) {
-        setState(() {
-          isLoadingTrack = false;
-          errorMessage = "Stream unavailable. Try another track.";
-        });
-      }
-    }
-  }
-
-  Future<void> searchMusic(String query) async {
-    if (query.trim().isEmpty) return;
-    setState(() {
-      isSearching = true;
-      searchResults = [];
-    });
-
-    List<Song> results = [];
-    try {
-      var yt = yt_explode.YoutubeExplode();
-      var ytResults = await yt.search.search(query);
-      for (var video in ytResults) {
-        results.add(Song(
-          videoId: video.id.value,
-          title: video.title,
-          author: video.author,
-          thumbnailUrl: video.thumbnails.highResUrl,
-        ));
-      }
-      yt.close();
-    } catch (_) {}
-
-    if (results.isEmpty) {
-      final instances = [
-        'https://pipedapi.kavin.rocks',
-        'https://pipedapi.adminforge.de',
-      ];
-      for (var instance in instances) {
-        try {
-          final response = await http.get(
-            Uri.parse('$instance/search?q=${Uri.encodeComponent(query)}&filter=videos'),
-          ).timeout(const Duration(seconds: 4));
-          
-          if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            final items = data['items'] as List?;
-            if (items != null && items.isNotEmpty) {
-              for (var item in items) {
-                String url = item['url'] ?? '';
-                String videoId = url.contains('?v=') ? url.split('?v=').last : '';
-                if (videoId.isNotEmpty) {
-                  results.add(Song(
-                    videoId: videoId,
-                    title: item['title'] ?? 'Unknown Title',
-                    author: item['uploaderName'] ?? 'Unknown Artist',
-                    thumbnailUrl: item['thumbnail'] ?? '',
-                  ));
-                }
-              }
-              break;
-            }
-          }
-        } catch (_) {
-          continue;
-        }
-      }
-    }
-
-    if (mounted) {
-      setState(() {
-        searchResults = results;
-        isSearching = false;
-      });
-    }
-  }
-
-  void openNowPlaying() {
-    if (currentSong == null) return;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => FullPlayerSheet(parent: this),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-          IndexedStack(
-            index: _currentIndex,
-            children: [
-              HomeTab(parent: this),
-              SearchTab(parent: this),
-              LibraryTab(parent: this),
-            ],
-          ),
-          if (currentSong != null)
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: 68,
-              child: MiniPlayer(parent: this),
-            ),
-        ],
-      ),
-      bottomNavigationBar: ClipRRect(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 35, sigmaY: 35),
-          child: Container(
-            color: Colors.black.withOpacity(0.85),
-            child: BottomNavigationBar(
-              currentIndex: _currentIndex,
-              backgroundColor: Colors.transparent,
-              elevation: 0,
-              selectedItemColor: OverriddenMusicApp.of(context)?._currentThemeKey == 'pink' ? const Color(0xFFFF007F) : Colors.white,
-              unselectedItemColor: Colors.white54,
-              type: BottomNavigationBarType.fixed,
-              onTap: (index) => setState(() => _currentIndex = index),
-              items: const [
-                BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: 'Home'),
-                BottomNavigationBarItem(icon: Icon(Icons.search_rounded), label: 'Search'),
-                BottomNavigationBarItem(icon: Icon(Icons.library_music_rounded), label: 'Library'),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class LiquidGlassCard extends StatelessWidget {
-  final Widget child;
-  final EdgeInsetsGeometry? padding;
-  final EdgeInsetsGeometry? margin;
-  final double borderRadius;
-
-  const LiquidGlassCard({
-    super.key,
-    required this.child,
-    this.padding,
-    this.margin,
-    this.borderRadius = 38,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: margin,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(borderRadius),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 35, sigmaY: 35),
-          child: Container(
-            padding: padding,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.06),
-              borderRadius: BorderRadius.circular(borderRadius),
-              border: Border.all(color: Colors.white.withOpacity(0.14), width: 1.5),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withOpacity(0.1),
-                  Colors.white.withOpacity(0.02),
-                ],
-              ),
-            ),
-            child: child,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class HomeTab extends StatelessWidget {
-  final _MainContainerState parent;
-  const HomeTab({super.key, required this.parent});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'OVERRIDDEN',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, letterSpacing: 4, color: Colors.white),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.settings_rounded, color: Colors.white, size: 26),
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => SettingsScreen(parent: parent)),
-                    );
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            LiquidGlassCard(
-              borderRadius: 40,
-              padding: const EdgeInsets.all(22),
-              child: Row(
-                children: [
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                    child: const Icon(Icons.bolt_rounded, color: Colors.white, size: 32),
-                  ),
-                  const SizedBox(width: 18),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Welcome back', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                        SizedBox(height: 4),
-                        Text('High-Fidelity Audio Streaming', style: TextStyle(fontSize: 12, color: Colors.white54)),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 30),
-            const Text(
-              'Recently Played',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white70),
-            ),
-            const SizedBox(height: 14),
-            SizedBox(
-              height: 210,
-              child: parent.recentSongs.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'No history yet. Search music or play local tracks!',
-                        style: TextStyle(color: Colors.white54),
-                      ),
-                    )
-                  : ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: parent.recentSongs.length,
-                      itemBuilder: (context, index) {
-                        final song = parent.recentSongs[index];
-                        return GestureDetector(
-                          onTap: () => parent.playSong(song, newQueue: parent.recentSongs, index: index),
-                          child: Container(
-                            width: 150,
-                            margin: const EdgeInsets.only(right: 14),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(24),
-                                  child: song.thumbnailUrl.isNotEmpty
-                                      ? Image.network(song.thumbnailUrl, width: 150, height: 150, fit: BoxFit.cover,
-                                          errorBuilder: (c, e, s) => Container(width: 150, height: 150, color: Colors.white24, child: const Icon(Icons.music_note, size: 40)))
-                                      : Container(width: 150, height: 150, color: Colors.white24, child: const Icon(Icons.audio_file, size: 40)),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                                Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class SearchTab extends StatelessWidget {
-  final _MainContainerState parent;
-  const SearchTab({super.key, required this.parent});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Search',
-              style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white),
-            ),
-            const SizedBox(height: 16),
-            LiquidGlassCard(
-              borderRadius: 36,
-              child: TextField(
-                controller: parent.searchController,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Search YouTube music catalog...',
-                  hintStyle: const TextStyle(color: Colors.white54),
-                  prefixIcon: const Icon(Icons.search_rounded, color: Colors.white54),
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-                ),
-                onSubmitted: (val) => parent.searchMusic(val),
-              ),
-            ),
-            const SizedBox(height: 18),
-            Expanded(
-              child: parent.isSearching
-                  ? const Center(child: CircularProgressIndicator(color: Colors.white))
-                  : parent.searchResults.isEmpty
-                      ? const Center(child: Text('Type a query above to stream music.', style: TextStyle(color: Colors.white54)))
-                      : ListView.builder(
-                          itemCount: parent.searchResults.length,
-                          itemBuilder: (context, index) {
-                            final song = parent.searchResults[index];
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 12.0),
-                              child: LiquidGlassCard(
-                                borderRadius: 32,
-                                child: ListTile(
-                                  leading: ClipRRect(
-                                    borderRadius: BorderRadius.circular(20),
-                                    child: song.thumbnailUrl.isNotEmpty
-                                        ? Image.network(song.thumbnailUrl, width: 50, height: 50, fit: BoxFit.cover,
-                                            errorBuilder: (c, e, s) => Container(width: 50, height: 50, color: Colors.white24))
-                                        : Container(width: 50, height: 50, color: Colors.white24, child: const Icon(Icons.music_note)),
-                                  ),
-                                  title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
-                                  subtitle: Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                                  onTap: () => parent.playSong(song, newQueue: parent.searchResults, index: index),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class LibraryTab extends StatelessWidget {
-  final _MainContainerState parent;
-  const LibraryTab({super.key, required this.parent});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Library',
-                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.refresh_rounded, color: Colors.white),
-                  onPressed: parent._scanLocalFiles,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: ListView(
-                children: [
-                  const Text('Liked Songs Playlist', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  parent.likedSongs.isEmpty
-                      ? LiquidGlassCard(
-                          borderRadius: 32,
-                          child: const Padding(
-                            padding: EdgeInsets.all(20.0),
-                            child: Text('No liked songs yet. Tap the heart icon on any track!', style: TextStyle(color: Colors.white54)),
-                          ),
-                        )
-                      : Column(
-                          children: parent.likedSongs.map((song) => Padding(
-                            padding: const EdgeInsets.only(bottom: 10.0),
-                            child: LiquidGlassCard(
-                              borderRadius: 30,
-                              child: ListTile(
-                                leading: ClipRRect(
-                                  borderRadius: BorderRadius.circular(16),
-                                  child: song.thumbnailUrl.isNotEmpty
-                                      ? Image.network(song.thumbnailUrl, width: 46, height: 46, fit: BoxFit.cover,
-                                          errorBuilder: (c, e, s) => Container(width: 46, height: 46, color: Colors.white24))
-                                      : Container(width: 46, height: 46, color: Colors.white24, child: const Icon(Icons.music_note)),
-                                ),
-                                title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
-                                subtitle: Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.favorite, color: Color(0xFFFF007F)),
-                                  onPressed: () => parent.toggleLike(song),
-                                ),
-                                onTap: () => parent.playSong(song, newQueue: parent.likedSongs, index: parent.likedSongs.indexOf(song)),
-                              ),
-                            ),
-                          )).toList(),
-                        ),
-                  const SizedBox(height: 24),
-                  const Text('Local Files', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  parent.localSongs.isEmpty
-                      ? LiquidGlassCard(
-                          borderRadius: 32,
-                          child: const Padding(
-                            padding: EdgeInsets.all(20.0),
-                            child: Text('Scanning local device storage...', style: TextStyle(color: Colors.white54)),
-                          ),
-                        )
-                      : Column(
-                          children: parent.localSongs.map((song) => Padding(
-                            padding: const EdgeInsets.only(bottom: 10.0),
-                            child: LiquidGlassCard(
-                              borderRadius: 30,
-                              child: ListTile(
-                                leading: Container(
-                                  width: 46, height: 46,
-                                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(16)),
-                                  child: const Icon(Icons.music_note, color: Colors.white, size: 22),
-                                ),
-                                title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
-                                subtitle: Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                                onTap: () => parent.playSong(song, newQueue: parent.localSongs, index: parent.localSongs.indexOf(song)),
-                              ),
-                            ),
-                          )).toList(),
-                        ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class SettingsScreen extends StatelessWidget {
-  final _MainContainerState parent;
-  const SettingsScreen({super.key, required this.parent});
-
-  @override
-  Widget build(BuildContext context) {
-    final appState = OverriddenMusicApp.of(context);
-    final currentKey = appState?._currentThemeKey ?? 'amoled';
-
-    return Scaffold(
-      backgroundColor: appState?.currentBackgroundColor ?? Colors.black,
-      appBar: AppBar(
-        title: const Text('Settings', style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: ListView(
-          children: [
-            const Text('Appearance & Theme', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            LiquidGlassCard(
-              borderRadius: 34,
-              child: ListTile(
-                title: const Text('Color Theme', style: TextStyle(color: Colors.white)),
-                subtitle: Text('Current: ${currentKey.toUpperCase()}', style: const TextStyle(color: Colors.white54)),
-                trailing: DropdownButton<String>(
-                  value: currentKey,
-                  dropdownColor: const Color(0xFF141414),
-                  style: const TextStyle(color: Colors.white),
-                  underline: const SizedBox(),
-                  items: const [
-                    DropdownMenuItem(value: 'amoled', child: Text('Pure AMOLED Black')),
-                    DropdownMenuItem(value: 'indigo', child: Text('Pixel 10 Indigo')),
-                    DropdownMenuItem(value: 'pink', child: Text('Hot Neon Pink')),
-                  ],
-                  onChanged: (String? val) {
-                    if (val != null) {
-                      appState?.setTheme(val);
-                    }
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            const Text('Storage & Data', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            LiquidGlassCard(
-              borderRadius: 34,
-              child: ListTile(
-                title: const Text('Clear Recently Played History', style: TextStyle(color: Colors.white)),
-                trailing: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-                onTap: () {
-                  parent.recentSongs.clear();
-                  parent.saveRecentSongs();
-                  parent.setState(() {});
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('History cleared successfully')),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 24),
-            const Text('Extras', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            LiquidGlassCard(
-              borderRadius: 34,
-              child: ListTile(
-                leading: const Icon(Icons.sports_esports_rounded, color: Colors.white),
-                title: const Text('Secret Game Arcade', style: TextStyle(color: Colors.white)),
-                subtitle: const Text('Launch mini game', style: TextStyle(color: Colors.white54, fontSize: 11)),
-                trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white54, size: 16),
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const SecretGameScreen()),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class SecretGameScreen extends StatefulWidget {
-  const SecretGameScreen({super.key});
-
-  @override
-  State<SecretGameScreen> createState() => _SecretGameScreenState();
-}
-
-class _SecretGameScreenState extends State<SecretGameScreen> {
-  int _score = 0;
-  int _timeLeft = 25;
-  bool _isPlaying = false;
-  Timer? _gameTimer;
-  Timer? _targetTimer;
-  double _targetX = 0.5;
-  double _targetY = 0.5;
-  bool _targetVisible = false;
-
-  void _startGame() {
-    setState(() {
-      _score = 0;
-      _timeLeft = 25;
-      _isPlaying = true;
-      _spawnTarget();
-    });
-
-    _gameTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        if (_timeLeft > 0) {
-          _timeLeft--;
-        } else {
-          _stopGame();
-        }
-      });
-    });
-  }
-
-  void _spawnTarget() {
-    if (!_isPlaying) return;
-    final random = Random();
-    setState(() {
-      _targetX = 0.15 + random.nextDouble() * 0.7;
-      _targetY = 0.2 + random.nextDouble() * 0.6;
-      _targetVisible = true;
-    });
-
-    _targetTimer?.cancel();
-    _targetTimer = Timer(const Duration(milliseconds: 1100), () {
-      if (_isPlaying) _spawnTarget();
-    });
-  }
-
-  void _shootTarget() {
-    if (!_isPlaying || !_targetVisible) return;
-    setState(() {
-      _score += 100;
-      _targetVisible = false;
-    });
-    _targetTimer?.cancel();
-    _spawnTarget();
-  }
-
-  void _stopGame() {
-    _gameTimer?.cancel();
-    _targetTimer?.cancel();
-    setState(() {
-      _isPlaying = false;
-      _targetVisible = false;
-    });
-  }
-
-  @override
-  void dispose() {
-    _gameTimer?.cancel();
-    _targetTimer?.cancel();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final currentSong = _playlist[_currentIndex];
+
     return Scaffold(
-      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Arcade Zone', style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.transparent,
+        backgroundColor: Colors.black,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
+        centerTitle: true,
+        title: const Text(
+          'T I D A L   H I - F I',
+          style: TextStyle(
+            color: Colors.white,
+            letterSpacing: 3,
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(20.0),
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
           child: Column(
             children: [
+              const SizedBox(height: 20),
+              // Square Album Art 1:1 Tidal style
+              Center(
+                child: Container(
+                  width: 280,
+                  height: 280,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.white.withOpacity(0.05),
+                        blurRadius: 20,
+                        spreadRadius: 5,
+                      ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      currentSong.albumArt,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 40),
+              // Title and Artist
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text('Time: ${_timeLeft}s', style: const TextStyle(fontSize: 18, color: Colors.white54)),
-                  Text('Score: $_score', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          currentSong.title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          currentSong.artist,
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.white38),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'MAX',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ),
                 ],
               ),
-              const SizedBox(height: 16),
-              if (!_isPlaying)
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.white12),
-                  onPressed: _startGame,
-                  child: const Text('Start Game', style: TextStyle(color: Colors.white)),
-                ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: LiquidGlassCard(
-                  borderRadius: 38,
-                  child: Stack(
-                    children: [
-                      const Center(child: Icon(Icons.add, color: Colors.white24, size: 40)),
-                      if (_isPlaying && _targetVisible)
-                        Positioned(
-                          left: MediaQuery.of(context).size.width * _targetX - 40,
-                          top: 350 * _targetY - 40,
-                          child: GestureDetector(
-                            onTap: _shootTarget,
-                            child: Container(
-                              width: 70,
-                              height: 70,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: const Color(0xFFFF007F),
-                                border: Border.all(color: Colors.white, width: 2),
-                                boxShadow: const [BoxShadow(color: Color(0xFFFF007F), blurRadius: 15)],
-                              ),
-                              child: const Center(
-                                child: CircleAvatar(radius: 10, backgroundColor: Colors.white),
-                              ),
-                            ),
-                          ),
-                        ),
-                      if (!_isPlaying)
-                        Center(
-                          child: Text(
-                            _score > 0 ? 'Game Over!\nFinal Score: $_score' : 'Tap Start to Play!',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 20, color: Colors.white54),
-                          ),
-                        ),
-                    ],
+              const SizedBox(height: 30),
+              // Controls
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    iconSize: 36,
+                    color: Colors.white,
+                    icon: const Icon(Icons.skip_previous_rounded),
+                    onPressed: () {
+                      int newIndex = (_currentIndex - 1) % _playlist.length;
+                      if (newIndex < 0) newIndex = _playlist.length - 1;
+                      _playSong(newIndex);
+                    },
                   ),
+                  const SizedBox(width: 30),
+                  Container(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                    ),
+                    child: IconButton(
+                      iconSize: 48,
+                      color: Colors.black,
+                      icon: Icon(
+                        _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                      ),
+                      onPressed: _togglePlayPause,
+                    ),
+                  ),
+                  const SizedBox(width: 30),
+                  IconButton(
+                    iconSize: 36,
+                    color: Colors.white,
+                    icon: const Icon(Icons.skip_next_rounded),
+                    onPressed: () {
+                      int newIndex = (_currentIndex + 1) % _playlist.length;
+                      _playSong(newIndex);
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 40),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'QUEUE / MASTER TRACKS',
+                  style: TextStyle(
+                    color: Colors.grey,
+                    fontSize: 12,
+                    letterSpacing: 1.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _playlist.length,
+                  itemBuilder: (context, index) {
+                    final song = _playlist[index];
+                    final isSelected = index == _currentIndex;
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: Image.network(
+                          song.albumArt,
+                          width: 48,
+                          height: 48,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      title: Text(
+                        song.title,
+                        style: TextStyle(
+                          color: isSelected ? Colors.white : Colors.grey[300],
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          fontSize: 14,
+                        ),
+                        maxLines: 1,
+                      ),
+                      subtitle: Text(
+                        song.artist,
+                        style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      ),
+                      trailing: isSelected
+                          ? const Icon(Icons.bar_chart_rounded, color: Colors.white)
+                          : null,
+                      onTap: () => _playSong(index),
+                    );
+                  },
                 ),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class MiniPlayer extends StatelessWidget {
-  final _MainContainerState parent;
-  const MiniPlayer({super.key, required this.parent});
-
-  @override
-  Widget build(BuildContext context) {
-    final song = parent.currentSong!;
-    return GestureDetector(
-      onTap: parent.openNowPlaying,
-      child: LiquidGlassCard(
-        borderRadius: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        child: Row(
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: song.thumbnailUrl.isNotEmpty
-                  ? Image.network(song.thumbnailUrl, width: 50, height: 50, fit: BoxFit.cover,
-                      errorBuilder: (c, e, s) => Container(width: 50, height: 50, color: Colors.white24))
-                  : Container(width: 50, height: 50, color: Colors.white24, child: const Icon(Icons.music_note, size: 22)),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                  Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                ],
-              ),
-            ),
-            IconButton(
-              icon: Icon(parent.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, color: Colors.white),
-              onPressed: () {
-                if (parent.isPlaying) {
-                  parent.audioPlayer.pause();
-                } else {
-                  parent.audioPlayer.play();
-                }
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class FullPlayerSheet extends StatelessWidget {
-  final _MainContainerState parent;
-  const FullPlayerSheet({super.key, required this.parent});
-
-  String _formatDuration(Duration position, Duration duration) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    String twoDigitMinutes = twoDigits(position.inMinutes.remainder(60));
-    String twoDigitSeconds = twoDigits(position.inSeconds.remainder(60));
-    String posStr = "$twoDigitMinutes:$twoDigitSeconds";
-
-    String durMinutes = twoDigits(duration.inMinutes.remainder(60));
-    String durSeconds = twoDigits(duration.inSeconds.remainder(60));
-    String durStr = "$durMinutes:$durSeconds";
-
-    return "$posStr / $durStr";
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final song = parent.currentSong!;
-    final isLiked = parent.isLiked(song);
-
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          if (song.thumbnailUrl.isNotEmpty)
-            Positioned.fill(
-              child: Opacity(
-                opacity: 0.35,
-                child: Image.network(
-                  song.thumbnailUrl,
-                  fit: BoxFit.cover,
-                ),
-              ),
-            ),
-          Positioned.fill(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 50, sigmaY: 50),
-              child: Container(color: Colors.black.withOpacity(0.65)),
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white, size: 34),
-                        onPressed: () => Navigator.pop(context),
-                      ),
-                      const Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text('PLAYING FROM STREAM', style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 10, fontWeight: FontWeight.bold)),
-                          SizedBox(height: 2),
-                          Text('Hi-Fi Master', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
-                        ],
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.more_vert_rounded, color: Colors.white, size: 26),
-                        onPressed: () {},
-                      ),
-                    ],
-                  ),
-                  const Spacer(),
-                  Container(
-                    width: MediaQuery.of(context).size.width * 0.82,
-                    height: MediaQuery.of(context).size.width * 0.82,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.7),
-                          blurRadius: 35,
-                          spreadRadius: 5,
-                          offset: const Offset(0, 15),
-                        ),
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: song.thumbnailUrl.isNotEmpty
-                          ? Image.network(song.thumbnailUrl, fit: BoxFit.cover,
-                              errorBuilder: (c, e, s) => Container(color: Colors.white10, child: const Icon(Icons.music_note, size: 80, color: Colors.white54)))
-                          : Container(color: Colors.white10, child: const Icon(Icons.music_note, size: 80, color: Colors.white54)),
-                    ),
-                  ),
-                  const Spacer(),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-                            const SizedBox(height: 6),
-                            Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, color: Colors.white54, fontWeight: FontWeight.w500)),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        icon: Icon(isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: isLiked ? const Color(0xFFFF007F) : Colors.white54, size: 30),
-                        onPressed: () => parent.toggleLike(song),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  StreamBuilder<Duration?>(
-                    stream: parent.audioPlayer.positionStream,
-                    builder: (context, snapshot) {
-                      final position = snapshot.data ?? Duration.zero;
-                      final duration = parent.audioPlayer.duration ?? const Duration(seconds: 1);
-                      double sliderVal = position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble());
-
-                      return Column(
-                        children: [
-                          SliderTheme(
-                            data: SliderThemeData(
-                              trackHeight: 3,
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                              activeTrackColor: Colors.white,
-                              inactiveTrackColor: Colors.white24,
-                              thumbColor: Colors.white,
-                            ),
-                            child: Slider(
-                              value: sliderVal,
-                              min: 0.0,
-                              max: duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0,
-                              onChanged: (val) {
-                                parent.audioPlayer.seek(Duration(milliseconds: val.toInt()));
-                              },
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 6.0),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(_formatDuration(position, duration).split(' / ')[0], style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                                Text(_formatDuration(position, duration).split(' / ')[1], style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                              ],
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  if (parent.isLoadingTrack)
-                    const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: LinearProgressIndicator(color: Colors.white))
-                  else if (parent.errorMessage != null)
-                    Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text(parent.errorMessage!, style: const TextStyle(color: Colors.redAccent, fontSize: 13))),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.shuffle_rounded, color: Colors.white54, size: 24),
-                        onPressed: () {},
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.skip_previous_rounded, color: Colors.white, size: 42),
-                        onPressed: parent.queue.isNotEmpty
-                            ? () {
-                                int newIndex = (parent.queueIndex - 1) % parent.queue.length;
-                                parent.playSong(parent.queue[newIndex], newQueue: parent.queue, index: newIndex);
-                              }
-                            : null,
-                      ),
-                      Container(
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: Colors.white,
-                        ),
-                        child: IconButton(
-                          icon: Icon(parent.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, color: Colors.black, size: 40),
-                          onPressed: () {
-                            if (parent.isPlaying) {
-                              parent.audioPlayer.pause();
-                            } else {
-                              parent.audioPlayer.play();
-                            }
-                          },
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.skip_next_rounded, color: Colors.white, size: 42),
-                        onPressed: parent.queue.isNotEmpty
-                            ? () {
-                                int newIndex = (parent.queueIndex + 1) % parent.queue.length;
-                                parent.playSong(parent.queue[newIndex], newQueue: parent.queue, index: newIndex);
-                              }
-                            : null,
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.repeat_rounded, color: Colors.white54, size: 24),
-                        onPressed: () {},
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.white24),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Text('FLAC • 24-bit / 96kHz', style: TextStyle(color: Colors.white54, fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.bold)),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                ],
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }
