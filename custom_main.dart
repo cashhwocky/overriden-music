@@ -8,38 +8,48 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt_explode;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  try {
+    await JustAudioBackground.init(
+      androidNotificationChannelId: 'com.overridden.music.audio',
+      androidNotificationChannelName: 'Overridden Music Playback',
+      androidNotificationOngoing: true,
+    );
+  } catch (_) {}
+
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
     systemNavigationBarColor: Colors.black,
     systemNavigationBarIconBrightness: Brightness.light,
   ));
-  runApp(const OverrideMusicApp());
+  runApp(const OverriddenMusicApp());
 }
 
-class OverrideMusicApp extends StatefulWidget {
-  const OverrideMusicApp({super.key});
+class OverriddenMusicApp extends StatefulWidget {
+  const OverriddenMusicApp({super.key});
 
   @override
-  State<OverrideMusicApp> createState() => _OverrideMusicAppState();
+  State<OverriddenMusicApp> createState() => _OverriddenMusicAppState();
 
-  static _OverrideMusicAppState? of(BuildContext context) =>
-      context.findAncestorStateOfType<_OverrideMusicAppState>();
+  static _OverriddenMusicAppState? of(BuildContext context) =>
+      context.findAncestorStateOfType<_OverriddenMusicAppState>();
 }
 
-class _OverrideMusicAppState extends State<OverrideMusicApp> {
+class _OverriddenMusicAppState extends State<OverriddenMusicApp> {
   String _currentThemeKey = 'amoled';
 
   final Map<String, Color> themes = {
     'amoled': Colors.black,
     'indigo': const Color(0xFF14182E),
-    'pink': const Color(0xFF2E1422),
+    'pink': const Color(0xFF1A000D), // Vivid hot neon pink base background
   };
 
   @override
@@ -68,13 +78,18 @@ class _OverrideMusicAppState extends State<OverrideMusicApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Override Music',
+      title: 'Overridden Music',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
         scaffoldBackgroundColor: currentBackgroundColor,
         canvasColor: currentBackgroundColor,
+        colorScheme: ColorScheme.dark(
+          primary: _currentThemeKey == 'pink' ? const Color(0xFFFF007F) : Colors.white,
+          secondary: Colors.white24,
+          surface: currentBackgroundColor,
+        ),
       ),
       home: const MainContainer(),
     );
@@ -284,7 +299,15 @@ class _MainContainerState extends State<MainContainer> {
 
     try {
       if (song.isLocal && song.filePath != null) {
-        await audioPlayer.setFilePath(song.filePath!);
+        await audioPlayer.setAudioSource(AudioSource.uri(
+          Uri.file(song.filePath!),
+          tag: MediaItem(
+            id: song.videoId,
+            title: song.title,
+            artist: song.author,
+            artUri: song.thumbnailUrl.isNotEmpty ? Uri.parse(song.thumbnailUrl) : null,
+          ),
+        ));
         await audioPlayer.play();
         if (mounted) setState(() => isLoadingTrack = false);
         return;
@@ -296,16 +319,39 @@ class _MainContainerState extends State<MainContainer> {
       var audioUrl = audioStream.url.toString();
       yt.close();
 
-      await audioPlayer.setUrl(audioUrl);
+      await audioPlayer.setAudioSource(AudioSource.uri(
+        Uri.parse(audioUrl),
+        tag: MediaItem(
+          id: song.videoId,
+          title: song.title,
+          artist: song.author,
+          artUri: song.thumbnailUrl.isNotEmpty ? Uri.parse(song.thumbnailUrl) : null,
+        ),
+      ));
       await audioPlayer.play();
 
       if (mounted) setState(() => isLoadingTrack = false);
     } catch (_) {
       try {
         var yt = yt_explode.YoutubeExplode();
-        await yt.videos.get(song.videoId);
+        var manifest = await yt.videos.streamsClient.getManifest(song.videoId);
+        var audioUrl = manifest.audioOnly.withHighestBitrate().url.toString();
         yt.close();
-        if (mounted) setState(() => isLoadingTrack = false);
+
+        await audioPlayer.setAudioSource(AudioSource.uri(
+          Uri.parse(audioUrl),
+          tag: MediaItem(
+            id: song.videoId,
+            title: song.title,
+            artist: song.author,
+            artUri: song.thumbnailUrl.isNotEmpty ? Uri.parse(song.thumbnailUrl) : null,
+          ),
+        ));
+        await audioPlayer.play();
+        if (mounted) {
+          setState(() => isLoadingTrack = false);
+        }
+        return;
       } catch (_) {}
 
       if (mounted) {
@@ -325,56 +371,54 @@ class _MainContainerState extends State<MainContainer> {
     });
 
     List<Song> results = [];
-    final instances = [
-      'https://pipedapi.kavin.rocks',
-      'https://pipedapi.adminforge.de',
-      'https://pipedapi.privacy.com.de',
-    ];
-
-    for (var instance in instances) {
-      try {
-        final response = await http.get(
-          Uri.parse('$instance/search?q=${Uri.encodeComponent(query)}&filter=videos'),
-        ).timeout(const Duration(seconds: 4));
-        
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          final items = data['items'] as List?;
-          if (items != null && items.isNotEmpty) {
-            for (var item in items) {
-              String url = item['url'] ?? '';
-              String videoId = url.contains('?v=') ? url.split('?v=').last : '';
-              if (videoId.isNotEmpty) {
-                results.add(Song(
-                  videoId: videoId,
-                  title: item['title'] ?? 'Unknown Title',
-                  author: item['uploaderName'] ?? 'Unknown Artist',
-                  thumbnailUrl: item['thumbnail'] ?? '',
-                ));
-              }
-            }
-            break;
-          }
-        }
-      } catch (_) {
-        continue;
+    try {
+      var yt = yt_explode.YoutubeExplode();
+      var ytResults = await yt.search.search(query);
+      for (var video in ytResults) {
+        results.add(Song(
+          videoId: video.id.value,
+          title: video.title,
+          author: video.author,
+          thumbnailUrl: video.thumbnails.highResUrl,
+        ));
       }
-    }
+      yt.close();
+    } catch (_) {}
 
     if (results.isEmpty) {
-      try {
-        var yt = yt_explode.YoutubeExplode();
-        var ytResults = await yt.search.search(query);
-        for (var video in ytResults) {
-          results.add(Song(
-            videoId: video.id.value,
-            title: video.title,
-            author: video.author,
-            thumbnailUrl: video.thumbnails.highResUrl,
-          ));
+      final instances = [
+        'https://pipedapi.kavin.rocks',
+        'https://pipedapi.adminforge.de',
+      ];
+      for (var instance in instances) {
+        try {
+          final response = await http.get(
+            Uri.parse('$instance/search?q=${Uri.encodeComponent(query)}&filter=videos'),
+          ).timeout(const Duration(seconds: 4));
+          
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body);
+            final items = data['items'] as List?;
+            if (items != null && items.isNotEmpty) {
+              for (var item in items) {
+                String url = item['url'] ?? '';
+                String videoId = url.contains('?v=') ? url.split('?v=').last : '';
+                if (videoId.isNotEmpty) {
+                  results.add(Song(
+                    videoId: videoId,
+                    title: item['title'] ?? 'Unknown Title',
+                    author: item['uploaderName'] ?? 'Unknown Artist',
+                    thumbnailUrl: item['thumbnail'] ?? '',
+                  ));
+                }
+              }
+              break;
+            }
+          }
+        } catch (_) {
+          continue;
         }
-        yt.close();
-      } catch (_) {}
+      }
     }
 
     if (mounted) {
@@ -412,7 +456,7 @@ class _MainContainerState extends State<MainContainer> {
             Positioned(
               left: 16,
               right: 16,
-              bottom: 82,
+              bottom: 68,
               child: MiniPlayer(parent: this),
             ),
         ],
@@ -421,12 +465,12 @@ class _MainContainerState extends State<MainContainer> {
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 35, sigmaY: 35),
           child: Container(
-            color: Colors.black.withOpacity(0.8),
+            color: Colors.black.withOpacity(0.85),
             child: BottomNavigationBar(
               currentIndex: _currentIndex,
               backgroundColor: Colors.transparent,
               elevation: 0,
-              selectedItemColor: Colors.white,
+              selectedItemColor: OverriddenMusicApp.of(context)?._currentThemeKey == 'pink' ? const Color(0xFFFF007F) : Colors.white,
               unselectedItemColor: Colors.white54,
               type: BottomNavigationBarType.fixed,
               onTap: (index) => setState(() => _currentIndex = index),
@@ -454,7 +498,7 @@ class LiquidGlassCard extends StatelessWidget {
     required this.child,
     this.padding,
     this.margin,
-    this.borderRadius = 28,
+    this.borderRadius = 38,
   });
 
   @override
@@ -464,18 +508,18 @@ class LiquidGlassCard extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(borderRadius),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+          filter: ImageFilter.blur(sigmaX: 35, sigmaY: 35),
           child: Container(
             padding: padding,
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
+              color: Colors.white.withOpacity(0.06),
               borderRadius: BorderRadius.circular(borderRadius),
-              border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.5),
+              border: Border.all(color: Colors.white.withOpacity(0.14), width: 1.5),
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
-                  Colors.white.withOpacity(0.08),
+                  Colors.white.withOpacity(0.1),
                   Colors.white.withOpacity(0.02),
                 ],
               ),
@@ -504,7 +548,7 @@ class HomeTab extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text(
-                  'OVERRIDE',
+                  'OVERRIDDEN',
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, letterSpacing: 4, color: Colors.white),
                 ),
                 IconButton(
@@ -520,7 +564,7 @@ class HomeTab extends StatelessWidget {
             ),
             const SizedBox(height: 20),
             LiquidGlassCard(
-              borderRadius: 32,
+              borderRadius: 40,
               padding: const EdgeInsets.all(22),
               child: Row(
                 children: [
@@ -529,7 +573,7 @@ class HomeTab extends StatelessWidget {
                     height: 56,
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(22),
                     ),
                     child: const Icon(Icons.bolt_rounded, color: Colors.white, size: 32),
                   ),
@@ -553,7 +597,8 @@ class HomeTab extends StatelessWidget {
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white70),
             ),
             const SizedBox(height: 14),
-            Expanded(
+            SizedBox(
+              height: 210,
               child: parent.recentSongs.isEmpty
                   ? const Center(
                       child: Text(
@@ -562,24 +607,29 @@ class HomeTab extends StatelessWidget {
                       ),
                     )
                   : ListView.builder(
+                      scrollDirection: Axis.horizontal,
                       itemCount: parent.recentSongs.length,
                       itemBuilder: (context, index) {
                         final song = parent.recentSongs[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12.0),
-                          child: LiquidGlassCard(
-                            borderRadius: 24,
-                            child: ListTile(
-                              leading: ClipRRect(
-                                borderRadius: BorderRadius.circular(16),
-                                child: song.thumbnailUrl.isNotEmpty
-                                    ? Image.network(song.thumbnailUrl, width: 50, height: 50, fit: BoxFit.cover,
-                                        errorBuilder: (c, e, s) => Container(width: 50, height: 50, color: Colors.white24, child: const Icon(Icons.music_note)))
-                                    : Container(width: 50, height: 50, color: Colors.white24, child: const Icon(Icons.audio_file)),
-                              ),
-                              title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                              subtitle: Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                              onTap: () => parent.playSong(song, newQueue: parent.recentSongs, index: index),
+                        return GestureDetector(
+                          onTap: () => parent.playSong(song, newQueue: parent.recentSongs, index: index),
+                          child: Container(
+                            width: 150,
+                            margin: const EdgeInsets.only(right: 14),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(24),
+                                  child: song.thumbnailUrl.isNotEmpty
+                                      ? Image.network(song.thumbnailUrl, width: 150, height: 150, fit: BoxFit.cover,
+                                          errorBuilder: (c, e, s) => Container(width: 150, height: 150, color: Colors.white24, child: const Icon(Icons.music_note, size: 40)))
+                                      : Container(width: 150, height: 150, color: Colors.white24, child: const Icon(Icons.audio_file, size: 40)),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                                Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                              ],
                             ),
                           ),
                         );
@@ -611,7 +661,7 @@ class SearchTab extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             LiquidGlassCard(
-              borderRadius: 24,
+              borderRadius: 36,
               child: TextField(
                 controller: parent.searchController,
                 style: const TextStyle(color: Colors.white),
@@ -638,10 +688,10 @@ class SearchTab extends StatelessWidget {
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 12.0),
                               child: LiquidGlassCard(
-                                borderRadius: 24,
+                                borderRadius: 32,
                                 child: ListTile(
                                   leading: ClipRRect(
-                                    borderRadius: BorderRadius.circular(16),
+                                    borderRadius: BorderRadius.circular(20),
                                     child: song.thumbnailUrl.isNotEmpty
                                         ? Image.network(song.thumbnailUrl, width: 50, height: 50, fit: BoxFit.cover,
                                             errorBuilder: (c, e, s) => Container(width: 50, height: 50, color: Colors.white24))
@@ -692,11 +742,46 @@ class LibraryTab extends StatelessWidget {
             Expanded(
               child: ListView(
                 children: [
+                  const Text('Liked Songs Playlist', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
+                  parent.likedSongs.isEmpty
+                      ? LiquidGlassCard(
+                          borderRadius: 32,
+                          child: const Padding(
+                            padding: EdgeInsets.all(20.0),
+                            child: Text('No liked songs yet. Tap the heart icon on any track!', style: TextStyle(color: Colors.white54)),
+                          ),
+                        )
+                      : Column(
+                          children: parent.likedSongs.map((song) => Padding(
+                            padding: const EdgeInsets.only(bottom: 10.0),
+                            child: LiquidGlassCard(
+                              borderRadius: 30,
+                              child: ListTile(
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: song.thumbnailUrl.isNotEmpty
+                                      ? Image.network(song.thumbnailUrl, width: 46, height: 46, fit: BoxFit.cover,
+                                          errorBuilder: (c, e, s) => Container(width: 46, height: 46, color: Colors.white24))
+                                      : Container(width: 46, height: 46, color: Colors.white24, child: const Icon(Icons.music_note)),
+                                ),
+                                title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
+                                subtitle: Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.favorite, color: Color(0xFFFF007F)),
+                                  onPressed: () => parent.toggleLike(song),
+                                ),
+                                onTap: () => parent.playSong(song, newQueue: parent.likedSongs, index: parent.likedSongs.indexOf(song)),
+                              ),
+                            ),
+                          )).toList(),
+                        ),
+                  const SizedBox(height: 24),
                   const Text('Local Files', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 10),
                   parent.localSongs.isEmpty
                       ? LiquidGlassCard(
-                          borderRadius: 24,
+                          borderRadius: 32,
                           child: const Padding(
                             padding: EdgeInsets.all(20.0),
                             child: Text('Scanning local device storage...', style: TextStyle(color: Colors.white54)),
@@ -706,51 +791,16 @@ class LibraryTab extends StatelessWidget {
                           children: parent.localSongs.map((song) => Padding(
                             padding: const EdgeInsets.only(bottom: 10.0),
                             child: LiquidGlassCard(
-                              borderRadius: 22,
+                              borderRadius: 30,
                               child: ListTile(
                                 leading: Container(
                                   width: 46, height: 46,
-                                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(14)),
+                                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(16)),
                                   child: const Icon(Icons.music_note, color: Colors.white, size: 22),
                                 ),
                                 title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
                                 subtitle: Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
                                 onTap: () => parent.playSong(song, newQueue: parent.localSongs, index: parent.localSongs.indexOf(song)),
-                              ),
-                            ),
-                          )).toList(),
-                        ),
-                  const SizedBox(height: 24),
-                  const Text('Liked Songs', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  parent.likedSongs.isEmpty
-                      ? LiquidGlassCard(
-                          borderRadius: 24,
-                          child: const Padding(
-                            padding: EdgeInsets.all(20.0),
-                            child: Text('No favorite tracks saved yet.', style: TextStyle(color: Colors.white54)),
-                          ),
-                        )
-                      : Column(
-                          children: parent.likedSongs.map((song) => Padding(
-                            padding: const EdgeInsets.only(bottom: 10.0),
-                            child: LiquidGlassCard(
-                              borderRadius: 22,
-                              child: ListTile(
-                                leading: ClipRRect(
-                                  borderRadius: BorderRadius.circular(14),
-                                  child: song.thumbnailUrl.isNotEmpty
-                                      ? Image.network(song.thumbnailUrl, width: 46, height: 46, fit: BoxFit.cover,
-                                          errorBuilder: (c, e, s) => Container(width: 46, height: 46, color: Colors.white24))
-                                      : Container(width: 46, height: 46, color: Colors.white24, child: const Icon(Icons.music_note)),
-                                ),
-                                title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
-                                subtitle: Text(song.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.favorite, color: Colors.white),
-                                  onPressed: () => parent.toggleLike(song),
-                                ),
-                                onTap: () => parent.playSong(song, newQueue: parent.likedSongs, index: parent.likedSongs.indexOf(song)),
                               ),
                             ),
                           )).toList(),
@@ -771,7 +821,7 @@ class SettingsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final appState = OverrideMusicApp.of(context);
+    final appState = OverriddenMusicApp.of(context);
     final currentKey = appState?._currentThemeKey ?? 'amoled';
 
     return Scaffold(
@@ -789,7 +839,7 @@ class SettingsScreen extends StatelessWidget {
             const Text('Appearance & Theme', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             LiquidGlassCard(
-              borderRadius: 24,
+              borderRadius: 34,
               child: ListTile(
                 title: const Text('Color Theme', style: TextStyle(color: Colors.white)),
                 subtitle: Text('Current: ${currentKey.toUpperCase()}', style: const TextStyle(color: Colors.white54)),
@@ -801,7 +851,7 @@ class SettingsScreen extends StatelessWidget {
                   items: const [
                     DropdownMenuItem(value: 'amoled', child: Text('Pure AMOLED Black')),
                     DropdownMenuItem(value: 'indigo', child: Text('Pixel 10 Indigo')),
-                    DropdownMenuItem(value: 'pink', child: Text('Neon Pink')),
+                    DropdownMenuItem(value: 'pink', child: Text('Hot Neon Pink')),
                   ],
                   onChanged: (String? val) {
                     if (val != null) {
@@ -815,7 +865,7 @@ class SettingsScreen extends StatelessWidget {
             const Text('Storage & Data', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             LiquidGlassCard(
-              borderRadius: 24,
+              borderRadius: 34,
               child: ListTile(
                 title: const Text('Clear Recently Played History', style: TextStyle(color: Colors.white)),
                 trailing: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
@@ -833,7 +883,7 @@ class SettingsScreen extends StatelessWidget {
             const Text('Extras', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             LiquidGlassCard(
-              borderRadius: 24,
+              borderRadius: 34,
               child: ListTile(
                 leading: const Icon(Icons.sports_esports_rounded, color: Colors.white),
                 title: const Text('Secret Game Arcade', style: TextStyle(color: Colors.white)),
@@ -963,7 +1013,7 @@ class _SecretGameScreenState extends State<SecretGameScreen> {
               const SizedBox(height: 16),
               Expanded(
                 child: LiquidGlassCard(
-                  borderRadius: 32,
+                  borderRadius: 38,
                   child: Stack(
                     children: [
                       const Center(child: Icon(Icons.add, color: Colors.white24, size: 40)),
@@ -978,9 +1028,9 @@ class _SecretGameScreenState extends State<SecretGameScreen> {
                               height: 70,
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
-                                color: Colors.pinkAccent,
+                                color: const Color(0xFFFF007F),
                                 border: Border.all(color: Colors.white, width: 2),
-                                boxShadow: const [BoxShadow(color: Colors.pink, blurRadius: 15)],
+                                boxShadow: const [BoxShadow(color: Color(0xFFFF007F), blurRadius: 15)],
                               ),
                               child: const Center(
                                 child: CircleAvatar(radius: 10, backgroundColor: Colors.white),
@@ -1018,12 +1068,12 @@ class MiniPlayer extends StatelessWidget {
     return GestureDetector(
       onTap: parent.openNowPlaying,
       child: LiquidGlassCard(
-        borderRadius: 26,
+        borderRadius: 32,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         child: Row(
           children: [
             ClipRRect(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(20),
               child: song.thumbnailUrl.isNotEmpty
                   ? Image.network(song.thumbnailUrl, width: 50, height: 50, fit: BoxFit.cover,
                       errorBuilder: (c, e, s) => Container(width: 50, height: 50, color: Colors.white24))
@@ -1057,7 +1107,6 @@ class MiniPlayer extends StatelessWidget {
   }
 }
 
-/// 1-to-1 Tidal-inspired Full Screen Player
 class FullPlayerSheet extends StatelessWidget {
   final _MainContainerState parent;
   const FullPlayerSheet({super.key, required this.parent});
@@ -1084,7 +1133,6 @@ class FullPlayerSheet extends StatelessWidget {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // Blurred ambient background artwork layer inspired by Tidal
           if (song.thumbnailUrl.isNotEmpty)
             Positioned.fill(
               child: Opacity(
@@ -1107,7 +1155,6 @@ class FullPlayerSheet extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Top Header with close arrow and streaming badge
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1130,12 +1177,11 @@ class FullPlayerSheet extends StatelessWidget {
                     ],
                   ),
                   const Spacer(),
-                  // Massive centered album artwork card with Tidal proportions and shadow glow
                   Container(
                     width: MediaQuery.of(context).size.width * 0.82,
                     height: MediaQuery.of(context).size.width * 0.82,
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(24),
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withOpacity(0.7),
@@ -1146,7 +1192,7 @@ class FullPlayerSheet extends StatelessWidget {
                       ],
                     ),
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(24),
                       child: song.thumbnailUrl.isNotEmpty
                           ? Image.network(song.thumbnailUrl, fit: BoxFit.cover,
                               errorBuilder: (c, e, s) => Container(color: Colors.white10, child: const Icon(Icons.music_note, size: 80, color: Colors.white54)))
@@ -1154,7 +1200,6 @@ class FullPlayerSheet extends StatelessWidget {
                     ),
                   ),
                   const Spacer(),
-                  // Track metadata row with favorite toggle
                   Row(
                     children: [
                       Expanded(
@@ -1168,13 +1213,12 @@ class FullPlayerSheet extends StatelessWidget {
                         ),
                       ),
                       IconButton(
-                        icon: Icon(isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: isLiked ? Colors.white : Colors.white54, size: 30),
+                        icon: Icon(isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: isLiked ? const Color(0xFFFF007F) : Colors.white54, size: 30),
                         onPressed: () => parent.toggleLike(song),
                       ),
                     ],
                   ),
                   const SizedBox(height: 20),
-                  // Audio progress stream builder (Tidal style slider & timestamps)
                   StreamBuilder<Duration?>(
                     stream: parent.audioPlayer.positionStream,
                     builder: (context, snapshot) {
@@ -1222,7 +1266,6 @@ class FullPlayerSheet extends StatelessWidget {
                   else if (parent.errorMessage != null)
                     Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text(parent.errorMessage!, style: const TextStyle(color: Colors.redAccent, fontSize: 13))),
                   const SizedBox(height: 10),
-                  // Master Control Row (Shuffle, Prev, Play/Pause, Next, Repeat)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
@@ -1271,7 +1314,6 @@ class FullPlayerSheet extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 24),
-                  // Bottom Tidal-style audio quality badge
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -1279,7 +1321,7 @@ class FullPlayerSheet extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
                           border: Border.all(color: Colors.white24),
-                          borderRadius: BorderRadius.circular(6),
+                          borderRadius: BorderRadius.circular(8),
                         ),
                         child: const Text('FLAC • 24-bit / 96kHz', style: TextStyle(color: Colors.white54, fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.bold)),
                       ),
