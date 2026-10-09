@@ -27,19 +27,71 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Scaffold Project & Inject Permissions
+      - name: Scaffold Project & Clean Manifest Setup
         run: |
           flutter create . --project-name overridden_music --platforms=android
           mkdir -p lib
           cp custom_main.dart lib/main.dart
           rm -rf test
           
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>\n    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>' "$MANIFEST"
-            
-            sed -i '/<application/a \        <service android:name="com.ryanheise.audioservice.AudioService" android:exported="true" android:foregroundServiceType="mediaPlayback" tools:ignore="Instantiatable">\n            <intent-filter>\n                <action android:name="android.media.browse.MediaBrowserService"/>\n            </intent-filter>\n        </service>\n        <receiver android:name="com.ryanheise.audioservice.MediaButtonReceiver" android:exported="true">\n            <intent-filter>\n                <action android:name="android.intent.action.MEDIA_BUTTON"/>\n            </intent-filter>\n        </receiver>' "$MANIFEST"
-          fi
+          # Safely write a clean AndroidManifest with all required permissions and audio service metadata
+          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+              
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+
+              <application
+                  android:label="Overridden Music"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:requestLegacyExternalStorage="true">
+                  
+                  <service android:name="com.ryanheise.audioservice.AudioService"
+                      android:exported="true"
+                      android:foregroundServiceType="mediaPlayback"
+                      tools:ignore="Instantiatable">
+                      <intent-filter>
+                          <action android:name="android.media.browse.MediaBrowserService"/>
+                      </intent-filter>
+                  </service>
+                  
+                  <receiver android:name="com.ryanheise.audioservice.MediaButtonReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MEDIA_BUTTON"/>
+                      </intent-filter>
+                  </receiver>
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:taskAffinity=""
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                        android:name="io.flutter.embedding.android.NormalTheme"
+                        android:resource="@style/NormalTheme"
+                        />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
 
       - name: Install dependencies
         run: flutter pub get
