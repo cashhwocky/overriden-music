@@ -27,10 +27,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Scaffold Fresh Flutter Project & Gradle Setup
+      - name: Scaffold Flutter Project Structure
         run: |
-          # Generates a fully compliant modern Gradle project structure in the current repo
-          flutter create . --org com.overridden.music --project-name overridden_music --force
+          flutter create . --org com.overridden.music --project-name overridden_music
 
       - name: Move custom_main to lib/main.dart
         run: |
