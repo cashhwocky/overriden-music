@@ -1,4 +1,4 @@
-name: amoled_tidal_player
+name: overridden_music
 description: A pure AMOLED black, Tidal-inspired music player built with Flutter.
 publish_to: 'none'
 version: 1.0.0+1
